@@ -4,3 +4,5 @@ Railway：從 GitHub 部署此目錄，加入 PostgreSQL，設定 DATABASE_URL�
 
 ## V3
 既有 PostgreSQL courses 表保留，新增 branding 表。管理員可上傳 PNG/JPG/WebP LOGO 或恢復預設，所有裝置共用。播放清單以單一卡片顯示，可修改名稱；點擊開啟 YouTube 清單。自動讀取清單標題、縮圖及影片數量需在 Railway Web 服務新增 YOUTUBE_API_KEY（Google Cloud 啟用 YouTube Data API v3 並限制金鑰用途）。未設定時仍可手動輸入標題儲存清單連結。私人清單不支援。JSON 備份仍僅包含課程，不含 LOGO。既有單片課程兼容。
+
+V3.1：LOGO 20 MB、瀏覽器自動縮圖、預覽、寬度與向右/向下偏移設定，新增 branding_layout 資料表。原資料表保留。手機月曆可在區塊內橫向捲動。

@@ -6,12 +6,13 @@ from flask import Flask,request,session,jsonify,send_from_directory
 import psycopg
 app=Flask(__name__,static_folder='public',static_url_path='')
 app.secret_key=os.environ['SECRET_KEY']
-app.config.update(SESSION_COOKIE_HTTPONLY=True,SESSION_COOKIE_SAMESITE='Lax',SESSION_COOKIE_SECURE=os.getenv('COOKIE_SECURE','1')=='1',MAX_CONTENT_LENGTH=2_000_000)
+app.config.update(SESSION_COOKIE_HTTPONLY=True,SESSION_COOKIE_SAMESITE='Lax',SESSION_COOKIE_SECURE=os.getenv('COOKIE_SECURE','1')=='1',MAX_CONTENT_LENGTH=21_000_000)
 def db(): return psycopg.connect(os.environ['DATABASE_URL'])
 with db() as c:
     c.execute('SELECT pg_advisory_xact_lock(824166)')
     c.execute('CREATE TABLE IF NOT EXISTS courses (day date PRIMARY KEY, items jsonb NOT NULL)')
     c.execute('CREATE TABLE IF NOT EXISTS branding (id integer PRIMARY KEY, logo bytea NOT NULL)')
+    c.execute('CREATE TABLE IF NOT EXISTS branding_layout (id integer PRIMARY KEY, settings jsonb NOT NULL)')
 @app.get('/')
 def home(): return send_from_directory('public','index.html')
 @app.get('/health')
@@ -59,20 +60,44 @@ def logo():
     with db() as c: row=c.execute('SELECT logo FROM branding WHERE id=1').fetchone()
     if not row: return send_from_directory('public','logo.png',max_age=0)
     return Response(bytes(row[0]),mimetype='image/png',headers={'Cache-Control':'no-store'})
+@app.errorhandler(413)
+def too_large(e): return jsonify(error='上傳資料超過 20 MB'),413
+@app.get('/api/logo/layout')
+def logo_layout():
+    with db() as c: row=c.execute('SELECT settings FROM branding_layout WHERE id=1').fetchone()
+    return jsonify(row[0] if row else dict(width=180,x=0,y=0))
 @app.post('/api/logo')
 def upload_logo():
     if not session.get('admin'): return jsonify(error='請先登入'),403
     try:
-        f=request.files['logo']; im=Image.open(f.stream)
-        if im.format not in ('PNG','JPEG','WEBP') or im.width*im.height>20_000_000: raise ValueError()
-        im=ImageOps.exif_transpose(im).convert('RGBA'); im.thumbnail((1200,600)); out=io.BytesIO(); im.save(out,format='PNG')
-    except Exception: return jsonify(error='請上傳有效 PNG、JPG 或 WebP（小於 2 MB）'),400
-    with db() as c: c.execute('INSERT INTO branding VALUES (1,%s) ON CONFLICT(id) DO UPDATE SET logo=excluded.logo',(out.getvalue(),))
+        layout={k:int(request.form.get(k,d)) for k,d in [('width',180),('x',0),('y',0)]}
+        if not 80<=layout['width']<=400 or not 0<=layout['x']<=100 or not 0<=layout['y']<=60: raise ValueError()
+    except (ValueError,TypeError): return jsonify(error='LOGO 位置或尺寸設定無效'),400
+    f=request.files.get('logo'); blob=None
+    if f and f.filename:
+        try:
+            raw=f.read(20_000_001)
+            if len(raw)>20_000_000: return jsonify(error='圖片超過 20 MB'),413
+            with Image.open(io.BytesIO(raw)) as im:
+                if im.format not in ('PNG','JPEG','WEBP'): return jsonify(error='僅支援 PNG、JPEG、WebP'),400
+                if im.width*im.height>40_000_000: return jsonify(error='圖片超過 4000 萬像素，請先縮小'),400
+                im.thumbnail((1200,600),Image.Resampling.LANCZOS)
+                im=ImageOps.exif_transpose(im).convert('RGBA'); im.thumbnail((1200,600))
+                out=io.BytesIO(); im.save(out,format='PNG',optimize=True); blob=out.getvalue()
+        except Exception:
+            app.logger.exception('Logo image processing failed'); return jsonify(error='圖片無法解碼或處理，請確認檔案完整'),400
+    try:
+        with db() as c:
+            if blob is not None: c.execute('INSERT INTO branding VALUES (1,%s) ON CONFLICT(id) DO UPDATE SET logo=excluded.logo',(blob,))
+            c.execute('INSERT INTO branding_layout VALUES (1,%s::jsonb) ON CONFLICT(id) DO UPDATE SET settings=excluded.settings',(json.dumps(layout),))
+    except Exception:
+        app.logger.exception('Logo database write failed'); return jsonify(error='資料庫儲存失敗，請查看 Railway 紀錄'),500
     return jsonify(ok=True)
 @app.delete('/api/logo')
 def reset_logo():
     if not session.get('admin'): return jsonify(error='請先登入'),403
-    with db() as c: c.execute('DELETE FROM branding WHERE id=1')
+    with db() as c:
+        c.execute('DELETE FROM branding WHERE id=1'); c.execute('DELETE FROM branding_layout WHERE id=1')
     return jsonify(ok=True)
 @app.get('/api/playlist')
 def playlist():
