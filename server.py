@@ -27,15 +27,31 @@ def login():
     return jsonify(error='帳號或密碼錯誤'),401
 @app.post('/api/logout')
 def logout(): session.clear(); return jsonify(ok=True)
+def visible_courses(rows, admin):
+    if admin:
+        return {str(d):v for d,v in rows}
+    result = {}
+    for d, items in rows:
+        public = [item for item in items if item.get('access', 'free') == 'free']
+        if public:
+            result[str(d)] = public
+    return result
+@app.after_request
+def protect_api_cache(response):
+    if request.path.startswith('/api/'):
+        response.headers['Cache-Control'] = 'private, no-store'
+        response.vary.add('Cookie')
+    return response
 @app.get('/api/courses')
 def courses():
-    with db() as c: return jsonify({str(d):v for d,v in c.execute('SELECT day,items FROM courses')})
+    with db() as c:
+        return jsonify(visible_courses(c.execute('SELECT day,items FROM courses'), bool(session.get('admin'))))
 @app.put('/api/courses/<day>')
 def save(day):
     if not session.get('admin'): return jsonify(error='請先登入'),403
     try:
         d=date.fromisoformat(day); v=request.get_json(); assert isinstance(v,list) and len(v)<=500
-        assert all(isinstance(x,dict) and ((x.get('kind','video')=='video' and re.fullmatch(r'[A-Za-z0-9_-]{11}',x['id'])) or (x.get('kind')=='playlist' and re.fullmatch(r'[A-Za-z0-9_-]{2,150}',x['id']) and (not x.get('thumbnail') or re.fullmatch(r'https://(?:i\.ytimg\.com|img\.youtube\.com)/[A-Za-z0-9_./?=&%-]+',x['thumbnail'])))) and isinstance(x['title'],str) and 0<len(x['title'])<=300 for x in v)
+        assert all(isinstance(x,dict) and x.get('access','free') in ('free','paid') and ((x.get('kind','video')=='video' and re.fullmatch(r'[A-Za-z0-9_-]{11}',x['id'])) or (x.get('kind')=='playlist' and re.fullmatch(r'[A-Za-z0-9_-]{2,150}',x['id']) and (not x.get('thumbnail') or re.fullmatch(r'https://(?:i\.ytimg\.com|img\.youtube\.com)/[A-Za-z0-9_./?=&%-]+',x['thumbnail'])))) and isinstance(x['title'],str) and 0<len(x['title'])<=300 for x in v)
     except Exception: return jsonify(error='資料格式錯誤'),400
     with db() as c:
         if v: c.execute('INSERT INTO courses VALUES (%s,%s::jsonb) ON CONFLICT(day) DO UPDATE SET items=excluded.items',(d,json.dumps(v)))
@@ -46,6 +62,7 @@ def save(day):
 def external():
     try:
         if request.path.endswith('video'):
+            if not session.get('admin'): return jsonify(error='請先登入'),403
             i=request.args.get('id',''); assert re.fullmatch(r'[A-Za-z0-9_-]{11}',i)
             url='https://www.youtube.com/oembed?'+urllib.parse.urlencode({'url':'https://www.youtube.com/watch?v='+i,'format':'json'})
         else:
